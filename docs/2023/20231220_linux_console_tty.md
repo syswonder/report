@@ -294,3 +294,69 @@ cp tools/jailhouse export/jailhouse
 https://github.com/OK8MQ-linux-sdk/OK8MQ-linux-sdk
 
 https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/toolchain
+
+![image-20231227201119715](20231220_linux_console_tty.assets/image-20231227201119715.png)
+
+```bash
+Each time you wish to use the SDK in a new shell session, you need to source the environment setup script e.g.
+. /opt/fsl-imx-xwayland/5.4-zeus/environment-setup-aarch64-poky-linux
+```
+
+SDK源码包，包括linux kernel, 文件系统等 https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/v1.0.0
+
+aarch64-poky-linux-gcc "stdio.h" not found https://blog.iotot.com/?p=346
+
+由于之前是直接下载的linux-kernel build，那个build是使用aarch64-gnu-linux-gcc编译的，和这一套aarch64-poky工具链还是有区别的，所有我重新执行了
+
+![image-20231227205831870](20231220_linux_console_tty.assets/image-20231227205831870.png)
+
+```bash
+./ci/gen-kernel-build.sh
+```
+
+使用aarch64-poky工具链编译linux kernel 5.10
+
+![image-20231227205944602](20231220_linux_console_tty.assets/image-20231227205944602.png)
+
+之后重新编译jailhouse，需要注意此时aarch64-poky的脚本依然生效，所以没有指定ARCH等变量
+
+```bash
+make KDIR=ci/out/linux/build-amd-seattle
+```
+
+![image-20231227210638335](20231220_linux_console_tty.assets/image-20231227210638335.png)
+
+依然找不到stdio.h，原因还是因为编译jailhouse的之后没有指定好sysroot，即使初始化脚本里设置了CC的sysroot，但是jailhouse编译的时候猜测并没有成功传入这个参数
+
+![image-20231227210758837](20231220_linux_console_tty.assets/image-20231227210758837.png)
+
+检查发现hypervisor目录下的源代码都成功生成了object文件，而stdio.h是tools下的源码使用的，尝试修改tools/Makefile
+
+![image-20231227211312722](20231220_linux_console_tty.assets/image-20231227211312722.png)
+
+在KBUILD_CFLAGS中加一行，--sysroot指向aarch64-poky环境变量
+
+![image-20231227211353238](20231220_linux_console_tty.assets/image-20231227211353238.png)
+
+成功编译了jailhouse可执行程序和jailhouse.ko，上板运行
+
+![image-20231227211710529](20231220_linux_console_tty.assets/image-20231227211710529.png)
+
+jailhouse工具成功启动，但是添加内核模块的时候报错 invalid module format
+
+![image-20231227211734840](20231220_linux_console_tty.assets/image-20231227211734840.png)
+
+```bash
+Linux OK8MP 5.4.70-2.3.0 #1 SMP PREEMPT Mon Apr 10 01:43:43 UTC 2023 aarch64 aarch64 aarch64 GNU/Linux
+```
+
+刚才通过jailhouse的ci脚本编译的的是linux 5.10的内核，猜测是因为用的linux源码版本不对
+
+![image-20231227211935427](20231220_linux_console_tty.assets/image-20231227211935427.png)
+
+模块加载时 insmod “Invalid module format ”问题解决 https://blog.csdn.net/ymangu666/article/details/22872439
+
+> 内核无法加载模块的原因是因为记载版本号的字符串和当前正在运行的内核模块的不一样，这个版本印戳作为一个静态的字符串存在于内核模块中，叫vermagic
+
+接下来的目标就明确了，即在 https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/v1.0.0 下载厂家给的linux源码
+
