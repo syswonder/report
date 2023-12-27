@@ -293,7 +293,7 @@ cp tools/jailhouse export/jailhouse
 
 https://github.com/OK8MQ-linux-sdk/OK8MQ-linux-sdk
 
-https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/toolchain
+这个问题可以通过使用NXP提供的编译器以及环境来解决，从上面的URL中下载aarch64-poky-linux工具链并解压安装
 
 ![image-20231227201119715](20231220_linux_console_tty.assets/image-20231227201119715.png)
 
@@ -358,5 +358,7 @@ Linux OK8MP 5.4.70-2.3.0 #1 SMP PREEMPT Mon Apr 10 01:43:43 UTC 2023 aarch64 aar
 
 > 内核无法加载模块的原因是因为记载版本号的字符串和当前正在运行的内核模块的不一样，这个版本印戳作为一个静态的字符串存在于内核模块中，叫vermagic
 
-接下来的目标就明确了，即在 https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/v1.0.0 下载厂家给的linux源码
+而手头的NXP板子是5.4的系统。
+
+接下来的目标就明确了，即在 https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/v1.0.0 下载厂家给的linux源码。
 
