@@ -437,3 +437,172 @@ make KDIR=/opt/OK8MQ-linux-sdk/OK8MQ-linux-kernel
 ./build.sh kernel
 ```
 
+需要注意的是，我修改了build.sh，配置`MAKE_JOBS=8`，因为如果设置为16的话，会导致我的ubuntu直接死机，之前编译内核的之后没有出现过这种问题，所以我还是减少了并行编译的线程数。
+
+![image-20231229101400585](20231220_linux_console_tty.assets/image-20231229101400585.png)
+
+我突然发现这个脚本甚至把jailhouse也编译了，也就算说这个SDK里是有jailhouse的源码的……
+
+![image-20231229101637687](20231220_linux_console_tty.assets/image-20231229101637687.png)
+
+位于OK8MP-linux-kernel/extra/jailhouse，这下方便了许多，并且能够保证jailhouse.ko的版本和内核一致。（但是看起来内核本身的编译没有成功，之后要看一下）
+
+![image-20231229101827871](20231220_linux_console_tty.assets/image-20231229101827871.png)
+
+这里的vermagic终于对上了
+
+![image-20231229102302019](20231220_linux_console_tty.assets/image-20231229102302019.png)
+
+上板成功加载module
+
+![image-20231229102333156](20231220_linux_console_tty.assets/image-20231229102333156.png)
+
+/dev下会多一个jailhouse设备
+
+![image-20231229102419643](20231220_linux_console_tty.assets/image-20231229102419643.png)
+
+接下来就是在板子上试一下jailhouse
+
+```bash
+./jailhouse enable ../imx8mp.cell
+```
+
+![image-20231229102704745](20231220_linux_console_tty.assets/image-20231229102704745.png)
+
+成功配置了默认的板卡配置文件im8mp.cell，可以看到4个CPU都被识别到了。
+
+```bash
+./jailhouse cell create ../imx8mp-gic-demo.cell
+```
+
+![image-20231229102902011](20231220_linux_console_tty.assets/image-20231229102902011.png)
+
+开启gic-demo配置后，CPU3被关闭，查看cell list
+
+![image-20231229103010300](20231220_linux_console_tty.assets/image-20231229103010300.png)
+
+这里gic-demo被分配到了单独的CPU3上，还没有开始运行
+
+```bash
+./jailhouse cell start --name gic-demo
+```
+
+![image-20231229103201562](20231220_linux_console_tty.assets/image-20231229103201562.png)
+
+接下来试着启动一个non-root linux cell
+
+准备好kernel和ramdisk
+
+![image-20231229104324874](20231220_linux_console_tty.assets/image-20231229104324874.png)
+
+
+
+```bash
+./tools/jailhouse cell linux ./imx8mp-linux-demo.cell ./kernel/Image -i ./kernel/ramdisk.img
+```
+
+![image-20231229104711274](20231220_linux_console_tty.assets/image-20231229104711274.png)
+
+看起来必须传入dtb文件
+
+```bash
+./tools/jailhouse cell linux ./imx8mp-linux-demo.cell ./kernel/Image --initrd ./kernel/ramdisk.img --dtb ./kernel/OK8MP-C.dtb
+```
+
+报错：
+
+![image-20231229105805483](20231220_linux_console_tty.assets/image-20231229105805483.png)
+
+![image-20231229110116743](20231220_linux_console_tty.assets/image-20231229110116743.png)
+
+可以看到是`fcntl.ioctl(self.dev, JailhouseCell.JAILHOUSE_CELL_CREATE, create)`出现了问题，报错OSError no.22
+
+首先这段代码将self.dev指向了打开的/dev/jailhouse文件，之后执行了fcntl.ioctl，这里是执行了一个系统调用ioctl
+
+https://docs.python.org/zh-cn/3/library/fcntl.html
+
+https://manpages.debian.org/ioctl(2)
+
+> The **ioctl**() system call manipulates the underlying device parameters of special files. In particular, many operating characteristics of character special files (e.g., terminals) may be controlled with **ioctl**() requests. The argument *fd* must be an open file descriptor.
+
+fcntl.**ioctl**(*fd*, *request*, *arg=0*, *mutate_flag=True*)
+
+fd为文件描述符，request是一个termios参数（https://docs.python.org/zh-cn/3/library/termios.html#module-termios），arg指向一个buffer，ioctl可以理解为对一个device进行操作。怀疑是/dev/jailhouse没有权限写？
+
+```
+chmod 777 /dev/jailhouse
+```
+
+依然报错`OSError: [Errno 22] Invalid argument`
+
+Error when testing linux on jailhouse https://groups.google.com/g/jailhouse-dev/c/WaSMOYB_XQ4/m/Kp62ClTpCgAJ
+
+https://www.mail-archive.com/jailhouse-dev@googlegroups.com/msg07264.html
+
+```bash
+vi /usr/lib/python3.7/site-packages/pyjailhouse/cell.py
+```
+
+```bash
+insmod jailhouse.ko
+./tools/jailhouse enable ./imx8mp.cell
+./tools/jailhouse cell linux ./imx8mp-linux-demo.cell ./kernel/Image --initrd ./kernel/ramdisk.img --dtb ./kernel/OK8MP-C.dtb
+```
+
+问题解决，应该首先使用enable启动jailhouse！
+
+此时出现新的报错：
+
+![image-20231229112758087](20231220_linux_console_tty.assets/image-20231229112758087.png)
+
+可以看到linux-inmate-demo cell是成功创建了，但是：
+
+```
+FileNotFoundError: [Errno 2] No such file or directory: '/mnt/tools/../inmates/tools/arm64/linux-loader.bin'
+```
+
+jailhouse在/mnt目录下寻找`inmates/tools/arm64/linux-loader.bin`，但是我U盘里并没有这个文件。
+
+然后板子就死机了：
+
+![image-20231229113154976](20231220_linux_console_tty.assets/image-20231229113154976.png)
+
+```bash
+insmod jailhouse.ko
+./tools/jailhouse enable ./imx8mp.cell
+./tools/jailhouse cell linux \
+	./imx8mp-linux-demo.cell \
+	./kernel/Image \
+	--initrd ./kernel/ramdisk.img \
+	--dtb ./kernel/OK8MP-C.dtb
+```
+
+我在jailhouse源码里找到了这个目录
+
+![image-20231229113328873](20231220_linux_console_tty.assets/image-20231229113328873.png)
+
+之后没有报错了，但是好像输出并没有打印出来：
+
+![image-20231229113742293](20231220_linux_console_tty.assets/image-20231229113742293.png)
+
+```bash
+mount /dev/sda1 /mnt && cd /mnt
+insmod jailhouse.ko
+./tools/jailhouse enable ./imx8mp.cell
+./tools/jailhouse cell linux \
+	./imx8mp-linux-demo.cell \
+	./kernel/Image \
+	-i ./kernel/ramdisk.img \
+	-d ./kernel/OK8MP-C.dtb \
+	-c "console=ttymxc1,30890000,115200 earlycon=ttymxc1,0x30890000,115200"
+```
+
+查看一下板子的串口位置：
+
+![image-20231229113952968](20231220_linux_console_tty.assets/image-20231229113952968.png)
+
+![image-20231229114457559](20231220_linux_console_tty.assets/image-20231229114457559.png)
+
+可以看到板子默认使用的是ttymxc1，无论是console还是用户程序都往这个串口输出，通过USB线连接到我的ubuntu的/dev/ttyACM0外部tty。
+
+non-root linux没输出的问题待解决！
