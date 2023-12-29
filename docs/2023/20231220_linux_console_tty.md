@@ -210,6 +210,14 @@ mknod console c 5 1
 
 其中c代表character device, 5是主设备号，1是第一个子设备，这样就创建了/dev/console设备
 
+# 探究linux kernel启动流程
+
+搞清楚aarch64下linux从entry开始到注册实际console的调用过程，以及linux kernel如何读取硬件dtb，并读出serial相关信息。
+
+这里使用linux kernel 6.6.8的源码进行阅读
+
+
+
 # NXP板子研究笔记
 
 启动扳子，连接DEBUG到电脑，我这里默认连接到的串口tty为/dev/ttyACM0
@@ -361,4 +369,71 @@ Linux OK8MP 5.4.70-2.3.0 #1 SMP PREEMPT Mon Apr 10 01:43:43 UTC 2023 aarch64 aar
 而手头的NXP板子是5.4的系统。
 
 接下来的目标就明确了，即在 https://github.com/Comet959/-ok8mq-jailhouse-linux/releases/tag/v1.0.0 下载厂家给的linux源码。
+
+下载好之后放在opt目录，对应的linux-kernel源码目录位于`/opt/OK8MQ-linux-sdk/OK8MQ-linux-kernel`
+
+出现报错
+
+````
+usr/bin/ld: scripts/dtc/dtc-parser.tab.o:(.bss+0x10): multiple definition of 'yylloc'; scripts/dtc/dtc-lexer.lex.o:(.bss+0x0): first defined here
+````
+
+查到的解决方法：
+
+```
+vim scripts/dtc/dtc-lexer.lex.c +640
+    extern YYLTYPE yylloc;
+```
+
+在IMX的SDK下编写build.sh
+
+```bash
+cd ./OK8MQ-linux-kernel
+make -j16 imx_v8_defconfig
+make -j16
+```
+
+这样在jailhouse编译的时候使用:
+
+```bash
+make KDIR=/opt/OK8MQ-linux-sdk/OK8MQ-linux-kernel
+```
+
+![image-20231229001347494](20231220_linux_console_tty.assets/image-20231229001347494.png)
+
+编译出来了面向linux 5.4内核的jailhouse.ko,上板试一下
+
+![image-20231229001704973](20231220_linux_console_tty.assets/image-20231229001704973.png)
+
+还是报错,可以看到虽然都是5.4,但是和我目前板子运行的linux版本还是有区别的,注意到jailhouse本身也报了一个错是disagrees about version of symbol module_layout
+
+和当前板子上的kernel module对比:
+
+![image-20231229002219506](20231220_linux_console_tty.assets/image-20231229002219506.png)
+
+```bash
+5.4.70-2.3.0 SMP preempt mod_unload modversions aarch64 # goodix
+5.4.3 SMP preempt mod_unload modversions aarch64 # jailhouse
+```
+
+所以目前这份厂家提供的linux源码版本并不对,需要再向厂商要板子的linux 5.4.70源码.
+
+目前在向厂家要了，在29号拿到了下载权限
+
+![image-20231229093152754](20231220_linux_console_tty.assets/image-20231229093152754.png)
+
+可以看到当前这版资料这里的linux内核和板子上的版本一致。
+
+![image-20231229093329153](20231220_linux_console_tty.assets/image-20231229093329153.png)
+
+在下载这个版本的SDK后，我发现其根目录有一个build.sh
+
+![image-20231229095610270](20231220_linux_console_tty.assets/image-20231229095610270.png)
+
+试着用这个脚本编译IMX linux kernel 5.4.70
+
+```
+. /opt/fsl-imx-xwayland/5.4-zeus/environment-setup-aarch64-poky-linux
+./build.sh kernel
+```
 
