@@ -216,7 +216,7 @@ mknod console c 5 1
 
 这里使用linux kernel 6.6.8的源码进行阅读
 
-
+TODO
 
 # NXP板子研究笔记
 
@@ -613,11 +613,9 @@ non-root linux没输出的问题待解决！
 
 在搜索资料的时候，发现了一个jailhouse资料仓库：https://github.com/CJTSAJ/jailhouse-learning
 
-![image-20240104104844548](20231220_linux_console_tty.assets/image-20240104104844548.png)
-
 ### cell配置文件
 
-configs/arm64/imx8mp.c
+`configs/arm64/imx8mp.c`
 
 ```c
 .header
@@ -711,9 +709,296 @@ configs/arm64/imx8mp.c
 
 接下来看一下linux-inmate的cell配置文件
 
+`configs/arm64/imx8mp-linux-demo.c`
 
+```c
+.cell = {
+    .signature = JAILHOUSE_CELL_DESC_SIGNATURE, // 不是SYSTEM配置而是CELL描述文件
+    .revision = JAILHOUSE_CONFIG_REVISION,
+    .name = "linux-inmate-demo",
+    .flags = JAILHOUSE_CELL_PASSIVE_COMMREG,
+
+    .cpu_set_size = sizeof(config.cpus),
+    .num_memory_regions = ARRAY_SIZE(config.mem_regions),
+    .num_irqchips = ARRAY_SIZE(config.irqchips),
+    .num_pci_devices = ARRAY_SIZE(config.pci_devices),
+    .vpci_irq_base = 154, /* Not include 32 base */
+},
+
+.cpus = {
+    0xc, // 4'b1011，也就是使用CPU1？之前启动这个cell的时候，CPU2和3被关闭了
+},
+
+.mem_regions = {
+/* UART2 earlycon */ {
+        .phys_start = 0x30890000, // 跟上面的debug_console一致
+        .virt_start = 0x30890000,
+        .size = 0x1000,
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_IO | JAILHOUSE_MEM_ROOTSHARED,
+    },
+    /* UART4 */ {
+        .phys_start = 0x30a60000, // 加了一个新的UART地址，这个地址我记得是ttymxc0
+        /*
+        	[    0.154619] 30860000.serial: ttymxc0 at MMIO 0x30860000 (irq = 28, base_baud = 5000000) is a IMX
+			[    0.155042] 30880000.serial: ttymxc2 at MMIO 0x30880000 (irq = 29, base_baud = 5000000) is a IMX
+			[    0.155376] 30890000.serial: ttymxc1 at MMIO 0x30890000 (irq = 30, base_baud = 1500000) is a IMX
+			[    1.250079] printk: console [ttymxc1] enabled
+		*/
+        .virt_start = 0x30a60000,
+        .size = 0x1000,
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_IO,
+    },
+    /* SHDC3 */ {
+        // SD卡IO区域位于0x30b6_0000
+        .phys_start = 0x30b60000,
+        .virt_start = 0x30b60000,
+        .size = 0x10000,
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_IO,
+    },
+    /* RAM: Top at 4GB Space */ {
+        .phys_start = 0xfdb00000,
+        .virt_start = 0,
+        .size = 0x10000, /* 64KB */
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_EXECUTE | JAILHOUSE_MEM_LOADABLE,
+    },
+    /* RAM */ {
+        /*
+         * We could not use 0x80000000 which conflicts with
+         * COMM_REGION_BASE
+         
+        	#define COMM_REGION_BASE	0x80000000
+        	
+        	位于include/inmate.h中定义，COMM REGION：
+        */
+        		/** Communication region between hypervisor and a cell. */
+        		// 这个内存区域用于hypervisor和cell进行通信
+                struct jailhouse_comm_region { // 这里给出x86下的结构定义，ARM也有类似的定义
+                    COMM_REGION_GENERIC_HEADER;
+                    /** I/O port address of the PM timer (x86-specific). */
+                    __u16 pm_timer_address;
+                    /** Number of CPUs available to the cell (x86-specific). */
+                    __u16 num_cpus;
+                    /** Calibrated TSC frequency in kHz (x86-specific). */
+                    __u32 tsc_khz;
+                    /** Calibrated APIC timer frequency in kHz or 0 if TSC deadline timer
+                     * is available (x86-specific). */
+                    __u32 apic_khz;
+                } __attribute__((packed));
+        
+                #define COMM_REGION_GENERIC_HEADER					\
+                /** Communication region magic JHCOMM */			\
+                char signature[6];						\
+                /** Communication region ABI revision */			\
+                __u16 revision;							\
+                /** Cell state, initialized by hypervisor, updated by cell. */	\
+                volatile __u32 cell_state;					\
+                /** Message code sent from hypervisor to cell. */		\
+                volatile __u32 msg_to_cell;					\
+                /** Reply code sent from cell to hypervisor. */			\
+                volatile __u32 reply_from_cell;					\
+                /** Holds static flags, see JAILHOUSE_COMM_FLAG_*. */		\
+                __u32 flags;							\
+                /** Debug console that may be accessed by the inmate. */	\
+                struct jailhouse_console console;				\
+                /** Base address of PCI memory mapped config. */		\
+                __u64 pci_mmconfig_base;
+        
+        /*
+        	
+         */
+        .phys_start = 0xc0000000,
+        .virt_start = 0xc0000000,
+        .size = 0x3d700000, // 983MB内存，从0xc000_0000物理地址开始
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_EXECUTE | JAILHOUSE_MEM_DMA |
+            JAILHOUSE_MEM_LOADABLE,
+    },
+    /* communication region */ {
+        .virt_start = 0x80000000, // 上面提到的通信区域
+        .size = 0x00001000, // 4KB
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_COMM_REGION,
+    },
+```
 
 ### i.MX8板子的dts文件
 
+![image-20240104212642120](20231220_linux_console_tty.assets/image-20240104212642120.png)
 
+位于厂家SDK中的`{linux kernel src}/arch/arm64/boot/dts/freescale/OK8MP-C.dts`
 
+![image-20240104212821894](20231220_linux_console_tty.assets/image-20240104212821894.png)
+
+依赖头文件`imx8mp.dtsi`和`pd.h`，正如之前学长所讲的各级厂商针对自己的板子对上游dts文件进行改造。
+
+在OK8MP-C的dts中有一个`/chose/stdout-path`节点指向了uart2：
+
+![image-20240104213352370](20231220_linux_console_tty.assets/image-20240104213352370.png)
+
+https://community.nxp.com/t5/i-MX-Processors/Specify-console-in-device-tree-chosen-stdout-path/td-p/1286547
+
+一般也可以写成`stdout-path = "/serial@{addr}:115200"`，这里写uart2是因为头文件里有定义：
+
+![image-20240104213612195](20231220_linux_console_tty.assets/image-20240104213612195.png)
+
+![image-20240104213635898](20231220_linux_console_tty.assets/image-20240104213635898.png)
+
+根据NXP提供的i.MX手册：
+
+![image-20240104214809328](20231220_linux_console_tty.assets/image-20240104214809328.png)
+
+这里就和uboot启动linux时的：
+
+```
+[    0.155376] 30890000.serial: ttymxc1 at MMIO 0x30890000 (irq = 30, base_baud = 1500000) is a IMX
+[    1.250079] printk: console [ttymxc1] enabled
+```
+
+对应上了，并且dtb中定义的4个UART都被linux识别出来了
+
+接下来先看OK8MP-C的设备树
+
+```bash
+/reserved-memory
+	/vdev0vring0
+	/vdev0vring1
+	/vdevbuffer
+	/rsc-table
+	/rpmsg_reserved
+	/imx8mp-cm7
+
+/chosen
+	/stdout-path=&uart2
+	
+/leds # 灯
+/keys # 按键
+
+/reg_usb1_host_vbus
+/reg_usdhc2_vmmc
+/usdhc1_pwrseq
+/reg_audio_pwr # 音频
+/cbtl04gp # 交叉开关crossbar
+/bt_sco_codec # 编码器
+/sound-bt-sco # 声卡
+/sound-hdmi # HDMI
+/sound-wm8960 # wm8960声卡
+/sound-nau8822 # nau8822立体声音频解码器
+/sound-xcvr # 收发器模组
+/lvds_backlight # 低振幅差分信号背光
+/dsi_backlight # dsi LCD 背光
+
+# 下面是设备树追加数据，对已存在的节点追加定义
+
+&aud2htx { # Audio Subsystem TO HDMI TX Subsystem
+	status = "okay";
+};
+
+&clk { # 时钟
+	init-on-array = <IMX8MP_CLK_HSIO_ROOT>;
+};
+
+&A53_0 # CPU
+...
+&i2c* # I2C
+...
+&pcie
+...
+&uart1 { /* BT */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1>;
+	assigned-clocks = <&clk IMX8MP_CLK_UART1>;
+	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_80M>;
+	fsl,uart-has-rtscts;
+	status = "okay";
+};
+&uart2 {
+	/* console */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart2>;
+	status = "okay";
+};
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart3>;
+	assigned-clocks = <&clk IMX8MP_CLK_UART3>;
+	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_80M>;
+	fsl,uart-has-rtscts;
+	status = "okay";
+};
+...
+&wdog1 # watchdog
+&iomuxc # pin 控制
+	/pinctrl_uart*
+...
+&gpu_3d {
+	status = "okay";
+};
+&gpu_2d {
+	status = "okay";
+};
+```
+
+![image-20240104222913453](20231220_linux_console_tty.assets/image-20240104222913453.png)
+
+**AXI** (Advanced eXtensible Interface) 高级可拓展接口
+
+**AHB** (Advanced High-performance Bus) 高级高性能总线
+
+**SPBA** (Shared Peripheral Bus Arbiter)
+
+**SDMA** (Smart Direct Memory Access)
+
+**AP Peripherals** (Application Processor Peripherals) ?
+
+### 如何配置linux inmate
+
+目前的一个思路是，在板子启动的uboot传入的dtb中只留下uart2，之后分配一个新的串口到linux inmate
+
+示例如下：
+
+```bash
+./tools/jailhouse enable ./imx8mp.cell
+./tools/jailhouse cell linux \
+	./imx8mp-linux-demo.cell \
+	./kernel/Image \
+	-i ./kernel/ramdisk.img \
+	-d ./kernel/OK8MP-C.dtb \
+	-c "console=ttymxc0,0x30860000,115200 earlycon=ttymxc0,0x30860000,115200"
+```
+
+由于板子启动的inux自动使用的是`ttymxc1`，为了避免冲突需要换成`ttymxc0`
+
+## 修改dts并编译
+
+https://zhuanlan.zhihu.com/p/656691650
+
+需要在厂家提供的linux源码里添加修改后的dts文件，位于`arch/arm64/boot/dts`
+
+```bash
+. /opt/fsl-imx-xwayland/5.4-zeus/environment-setup-aarch64-poky-linux
+make ARCH=arm64 -j8 CROSS_COMPILE=aarch64-poky-linux- dtbs # += Image for build image
+```
+
+`OK8MP-C-wheatfox.dts`
+
+![image-20240104235105066](20231220_linux_console_tty.assets/image-20240104235105066.png)
+
+![image-20240104235124096](20231220_linux_console_tty.assets/image-20240104235124096.png)
+
+修改Makefile，添加`OK8MP-C-wheatfox.dtb`
+
+![image-20240104235330145](20231220_linux_console_tty.assets/image-20240104235330145.png)
+
+![image-20240104235435985](20231220_linux_console_tty.assets/image-20240104235435985.png)
+
+虽然有报错，但实际上dtc只是报出了warning，不过makefile默认认为失败了，可以看到新的dtb文件也生成了：
+
+![image-20240104235538121](20231220_linux_console_tty.assets/image-20240104235538121.png)
+
+### i.MX8的4x10pin串口连接电脑
+
+目前在问客服
