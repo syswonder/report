@@ -606,3 +606,114 @@ insmod jailhouse.ko
 可以看到板子默认使用的是ttymxc1，无论是console还是用户程序都往这个串口输出，通过USB线连接到我的ubuntu的/dev/ttyACM0外部tty。
 
 non-root linux没输出的问题待解决！
+
+## jailhouse cell探究
+
+猜测出问题的一个原因是设备配置的问题，目前jailhouse的启动流程是，首先通过板卡的cell启动jailhouse，之后通过启动linux或自定义的cell以启动一个“虚拟器”并运行linux或裸机程序，而在启动non-root linux时，需要传递一个dtb文件，作为虚拟机linux启动的设备树，这些环节都需要进行研究和配置
+
+在搜索资料的时候，发现了一个jailhouse资料仓库：https://github.com/CJTSAJ/jailhouse-learning
+
+![image-20240104104844548](20231220_linux_console_tty.assets/image-20240104104844548.png)
+
+### cell配置文件
+
+configs/arm64/imx8mp.c
+
+```c
+.header
+	.signature = JAILHOUSE_SYSTEM_SIGNATURE,
+	.hypervisor_memory = {
+        .phys_start = 0xfdc00000,
+        .size =       0x00400000, // 保留了4MB的内存供hypervisor使用
+    },
+    .debug_console = {
+        .address = 0x30890000, // 串口MMIO地址
+        .size = 0x1000, // 串口寄存器MMIO区域大小
+        .flags = JAILHOUSE_CON_ACCESS_MMIO |
+             JAILHOUSE_CON_REGDIST_4,
+        .type = JAILHOUSE_CON_TYPE_IMX,
+    },
+    .root_cell = {
+        .name = "imx8mp",
+
+        .num_pci_devices = ARRAY_SIZE(config.pci_devices),
+        .cpu_set_size = sizeof(config.cpus), // 子配置域cpus
+        .num_memory_regions = ARRAY_SIZE(config.mem_regions), // 子配置域mem_regions
+        .num_irqchips = ARRAY_SIZE(config.irqchips), // 子配置域irqchips
+        /* gpt5/4/3/2 not used by root cell */
+        .vpci_irq_base = 51, /* Not include 32 base */
+    },
+
+.cpus = {
+    0xf, // 4'b1111
+},
+
+.mem_regions = {
+	... // IVSHMEM 部分（inter vm shared memory)
+        // start at 0xfd9f....
+    /* IO */ {
+        .phys_start = 0x00000000,
+        .virt_start = 0x00000000,
+        .size =	      0x38800000, // 从0x0开始的984MB是IO区域
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_IO,
+    },
+    /* RAM 00*/ {
+        .phys_start = 0x40000000,
+        .virt_start = 0x40000000,
+        .size = 0x80000000, // 从0x4000_0000开始的2G区域是RAM空间
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_EXECUTE,
+    },
+    /* Inmate memory */{ // 这里配置好了虚拟机的内存区域
+        				 // 从0xc0000000开始，分配了983MB的内存
+        .phys_start = 0xc0000000,
+        .virt_start = 0xc0000000,
+        .size = 0x3d700000,
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_EXECUTE,
+    },
+    /* Loader */{
+        .phys_start = 0xfdb00000,
+        .virt_start = 0xfdb00000,
+        .size = 0x100000, // 0xfdb00000存放loader
+        				  // 这里的loader指的是什么？查手册
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE |
+            JAILHOUSE_MEM_EXECUTE,
+    },
+    /* OP-TEE reserved memory?? */{
+        .phys_start = 0xfe000000,
+        .virt_start = 0xfe000000,
+        .size = 0x2000000,
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+    },
+    /* RAM04 */{
+        .phys_start = 0x100000000,
+        .virt_start = 0x100000000,
+        .size = 0xC0000000,
+        // RAM04，从0x1_0000_0000开始，3G大小的内存空间
+        .flags = JAILHOUSE_MEM_READ | JAILHOUSE_MEM_WRITE,
+    },
+},
+
+.irqchips // 涉及GIC地址等信息
+	/* GIC */ {
+        .address = 0x38800000,
+        .pin_base = 32, // 这里的pin指什么，查一下NXP的CPU手册
+        .pin_bitmap = {
+            0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff,
+        },
+    },
+	...
+
+.pci_devices // 挂载了四个JAILHOUSE_PCI_TYPE_IVSHMEM设备
+```
+
+接下来看一下linux-inmate的cell配置文件
+
+
+
+### i.MX8板子的dts文件
+
+
+
