@@ -839,7 +839,7 @@ non-root linux没输出的问题待解决！
 
 依赖头文件`imx8mp.dtsi`和`pd.h`，正如之前学长所讲的各级厂商针对自己的板子对上游dts文件进行改造。
 
-在OK8MP-C的dts中有一个`/chose/stdout-path`节点指向了uart2：
+在OK8MP-C的dts中有一个`/chosen/stdout-path`节点指向了uart2：
 
 ![image-20240104213352370](20231220_linux_console_tty.assets/image-20240104213352370.png)
 
