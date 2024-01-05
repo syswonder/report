@@ -230,7 +230,9 @@ TODO
 
 默认启动的是自带的linux 5.4.70，通过查看启动拨码开关，默认是配置为eMMC启动。
 
-## NXP jailhouse
+## NXP jailhouse初探
+
+### 编译jailhouse
 
 https://github.com/nxp-imx/imx-jailhouse
 
@@ -445,13 +447,15 @@ make KDIR=/opt/OK8MQ-linux-sdk/OK8MQ-linux-kernel
 
 ![image-20231229101637687](20231220_linux_console_tty.assets/image-20231229101637687.png)
 
-位于OK8MP-linux-kernel/extra/jailhouse，这下方便了许多，并且能够保证jailhouse.ko的版本和内核一致。（但是看起来内核本身的编译没有成功，之后要看一下）
+位于OK8MP-linux-kernel/extra/jailhouse，这下方便了许多，并且能够保证jailhouse.ko的版本和内核一致。
 
 ![image-20231229101827871](20231220_linux_console_tty.assets/image-20231229101827871.png)
 
 这里的vermagic终于对上了
 
 ![image-20231229102302019](20231220_linux_console_tty.assets/image-20231229102302019.png)
+
+### 上板运行jailhouse
 
 上板成功加载module
 
@@ -858,7 +862,7 @@ https://community.nxp.com/t5/i-MX-Processors/Specify-console-in-device-tree-chos
 [    1.250079] printk: console [ttymxc1] enabled
 ```
 
-对应上了，并且dtb中定义的4个UART都被linux识别出来了
+对应上了，并且dtb中定义的3个UART都被linux识别出来了
 
 接下来先看OK8MP-C的设备树
 
@@ -954,24 +958,6 @@ https://community.nxp.com/t5/i-MX-Processors/Specify-console-in-device-tree-chos
 
 **AP Peripherals** (Application Processor Peripherals) ?
 
-### 如何配置linux inmate
-
-目前的一个思路是，在板子启动的uboot传入的dtb中只留下uart2，之后分配一个新的串口到linux inmate
-
-示例如下：
-
-```bash
-./tools/jailhouse enable ./imx8mp.cell
-./tools/jailhouse cell linux \
-	./imx8mp-linux-demo.cell \
-	./kernel/Image \
-	-i ./kernel/ramdisk.img \
-	-d ./kernel/OK8MP-C.dtb \
-	-c "console=ttymxc0,0x30860000,115200 earlycon=ttymxc0,0x30860000,115200"
-```
-
-由于板子启动的inux自动使用的是`ttymxc1`，为了避免冲突需要换成`ttymxc0`
-
 ## 修改dts并编译
 
 https://zhuanlan.zhihu.com/p/656691650
@@ -1063,46 +1049,7 @@ cp OK8MP-C-board.dtb /run/media/mmcblk2p1/OK8MP-C.dtb
 
 可以看到uart1和uart3都没有被linux识别。
 
-## 修改linux inmate的设备树并启动
-
-利用同样的思想，修改OK8MP-C-wheatfox.dts，使得linux inmate只能使用`uart1(serial0, ttymxc0)`，并在choson中设置stdout使用的串口。
-
-```c
-&uart1 { /* BT */
-	pinctrl-names = "default";
-	pinctrl-0 = <&pinctrl_uart1>;
-	assigned-clocks = <&clk IMX8MP_CLK_UART1>;
-	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_80M>;
-	fsl,uart-has-rtscts;
-	status = "okay";
-};
-
-&uart2 {
-	status = "disabled";
-};
-
-&uart3 {
-	status = "disabled";
-};
-```
-
-启动jailhouse
-
-```bash
-./tools/jailhouse enable ./imx8mp.cell
-./tools/jailhouse cell linux \
-	./imx8mp-linux-demo.cell \
-	./kernel/Image \
-	-i ./kernel/ramdisk.img \
-	-d ./kernel/OK8MP-C-wheatfox.dtb \
-	-c "console=ttymxc0,0x30860000,115200 earlycon=ttymxc0,0x30860000,115200"
-```
-
-![image-20240105110818244](20231220_linux_console_tty.assets/image-20240105110818244.png)
-
-可以看到还是没有输出，理论上即使这里使用和当前root linux相同的console，也是应该能够打印一些东西的，只不过会报措"unable to open initial conole"。
-
-说明linux还是启动的有问题。
+## 启动linux inmate研究
 
 我注意到，厂家给的dts里是有linux inmate系列的dts的：
 
@@ -1112,7 +1059,7 @@ cp OK8MP-C-board.dtb /run/media/mmcblk2p1/OK8MP-C.dtb
 
 ![image-20240105112222677](20231220_linux_console_tty.assets/image-20240105112222677.png)
 
-发现这个inmate dts使用的是uart4，先试着用这个默认的设备树启动inmate，串口暂时还是用serial1
+发现这个inmate dts使用的是uart4（恰好和板子定义的前三个串口没有冲突），先试着用这个默认的设备树启动inmate，串口暂时还是用serial1
 
 ```bash
 ./tools/jailhouse enable ./imx8mp.cell
@@ -1126,9 +1073,57 @@ cp OK8MP-C-board.dtb /run/media/mmcblk2p1/OK8MP-C.dtb
 
 ![image-20240105113429976](20231220_linux_console_tty.assets/image-20240105113429976.png)
 
-理论上应该要看到Started cell "linux-inmate-demo"才说明成功启动，所以说jailhouse在create cell, cell set loadable之后，执行start cell的环节失败了。
+理论上应该要看到Started cell "linux-inmate-demo"才说明成功启动
 
+尝试修改jailhouse源码，在cell_start函数添加printk输出调试信息
 
+![image-20240105125854192](20231220_linux_console_tty.assets/image-20240105125854192.png)
+
+从`cell_set_loadable`函数开始排查。
+
+![image-20240105130532207](20231220_linux_console_tty.assets/image-20240105130532207.png)
+
+这里涉及到jailhouse对hypercall的处理，也就是说，cell_start是通过一个hypercall进行函数执行的。
+
+在cell.c中，jailhouse_cmd_cell_start执行了hypercall：
+
+![image-20240105130805622](20231220_linux_console_tty.assets/image-20240105130805622.png)
+
+可以看到在cell_load之后，jailhouse cmd又发送了一个cell_load的hypercall。
+
+![image-20240105141553967](20231220_linux_console_tty.assets/image-20240105141553967.png)
+
+编译的时候出现了问题，在修改了hypervisor firmware部分的代码后，kernel module对应部分并没有更新，及时代码已经被修改了。
+
+在driver/main.c中制定了MODULE_FIRMWARE，在我手动修改为jailhouse.bin1，后，上板运行出现了报错：
+
+![image-20240105144114396](20231220_linux_console_tty.assets/image-20240105144114396.png)
+
+说明kernel module和其注册的firmware（这里即为jailhouse baremetal部分的程序）是分离的，我刚刚修改了firmware代码后，并没有更新在板子上。
+
+![image-20240105144327093](20231220_linux_console_tty.assets/image-20240105144327093.png)
+
+request_firware第一个参数用来保存读取的firmware，第二个参数是固件文件名，第三个是申请固件的设备。
+
+那么固件应该放在哪里呢：
+
+![image-20240105145112436](20231220_linux_console_tty.assets/image-20240105145112436.png)
+
+果然在板子的lib/firmware里找到了一直没被更新的固件jailhouse.bin：
+
+![image-20240105145319733](20231220_linux_console_tty.assets/image-20240105145319733.png)
+
+```bash
+cp jailhouse.bin /lib/firmware/jailhouse.bin
+```
+
+成功更新jailhouse firmware：
+
+![image-20240105145706138](20231220_linux_console_tty.assets/image-20240105145706138.png)
+
+printk排查问题后，发现python脚本在load linux kernel的时候就卡住了，甚至没有开始执行load dtb和load initrd，如何解决？
+
+![image-20240105154830009](20231220_linux_console_tty.assets/image-20240105154830009.png)
 
 # 附录
 
@@ -1158,11 +1153,7 @@ cp OK8MP-C-board.dtb /run/media/mmcblk2p1/OK8MP-C.dtb
 
 ![IMG_20240105_103444_edit_409390889312531](20231220_linux_console_tty.assets/IMG_20240105_103444_edit_409390889312531.jpg)
 
-翻了一下自己没有2.54公对公的杜邦线，所有还需要买线。
-
-![IMG_20240105_103510_edit_409420967453151](20231220_linux_console_tty.assets/IMG_20240105_103510_edit_409420967453151.jpg)
-
-整个流程就是：IMG_20240105_103444_edit_409390889312531
+整个流程就是：
 
 ```
 牛角座10pin(2mm)【公头】 -> 【母头】2mm转2.54mm杜邦线【母头】 <- 【公头】杜邦线【公头】 -> 【公头】TTL转USB【USB】
