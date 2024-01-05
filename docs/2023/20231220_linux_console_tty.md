@@ -726,7 +726,7 @@ non-root linux没输出的问题待解决！
 },
 
 .cpus = {
-    0xc, // 4'b1011，也就是使用CPU1？之前启动这个cell的时候，CPU2和3被关闭了
+    0xc, // 4'b1100，也就是使用CPU0+1，之前启动这个cell的时候，CPU2和3被关闭了
 },
 
 .mem_regions = {
@@ -979,11 +979,10 @@ https://zhuanlan.zhihu.com/p/656691650
 需要在厂家提供的linux源码里添加修改后的dts文件，位于`arch/arm64/boot/dts`
 
 ```bash
+cd /opt/nxp/OK8MP-linux-sdk/OK8MP-linux-kernel
 . /opt/fsl-imx-xwayland/5.4-zeus/environment-setup-aarch64-poky-linux
 make ARCH=arm64 -j8 CROSS_COMPILE=aarch64-poky-linux- dtbs # += Image for build image
 ```
-
-`OK8MP-C-wheatfox.dts`
 
 ![image-20240104235105066](20231220_linux_console_tty.assets/image-20240104235105066.png)
 
@@ -999,6 +998,173 @@ make ARCH=arm64 -j8 CROSS_COMPILE=aarch64-poky-linux- dtbs # += Image for build 
 
 ![image-20240104235538121](20231220_linux_console_tty.assets/image-20240104235538121.png)
 
-### i.MX8的4x10pin串口连接电脑
+接下来修改扳子启动时的dtb
 
-目前在问客服
+`OK8MP-C-board.dts`
+
+只留下默认的那个uart2（serial1, ttymxc1）
+
+![image-20240105104235288](20231220_linux_console_tty.assets/image-20240105104235288.png)
+
+编译后放到u盘里
+
+![image-20240105104450441](20231220_linux_console_tty.assets/image-20240105104450441.png)
+
+## 修改imx8mp板子启动的设备树
+
+打电话问forlinx技术，了解到进入`/run/media/mmcblk2p`，对应eMMC存储，这个里面放着Image等启动文件
+
+![image-20240105100903647](20231220_linux_console_tty.assets/image-20240105100903647.png)
+
+修改启动时使用的dtb，只需要替换这里的`OK8MP-C.dtb`即可，注意名字一定保持不变，否则uboot无法找到设备树文件。
+
+接下来将刚刚修改好的板子启动dtb对原dtb进行替换。
+
+```bash
+cp OK8MP-C-board.dtb /run/media/mmcblk2p1/OK8MP-C.dtb
+```
+
+![image-20240105104800259](20231220_linux_console_tty.assets/image-20240105104800259.png)
+
+重启后发现设备还是被识别出来了，因为之前只是注释了&节点追加定义，如果要彻底隐藏节点，推测需要在头文件里把根下的节点去掉才可以！
+
+所以需要修改`imx8mp.dtsi` ？
+
+![image-20240105105030001](20231220_linux_console_tty.assets/image-20240105105030001.png)
+
+![image-20240105105109408](20231220_linux_console_tty.assets/image-20240105105109408.png)
+
+直接修改头文件会导致大量的dts编译报错，因为很多dts需要这些uart1和uart3节点：
+
+![image-20240105105558160](20231220_linux_console_tty.assets/image-20240105105558160.png)
+
+试着在OK8MP厂家dts添加节点补充属性status = "disabled"？
+
+```c
+&uart1 {
+	status = "disabled";
+};
+
+&uart3 {
+	status = "disabled";
+};
+
+&uart2 {
+	/* console */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart2>;
+	status = "okay";
+};
+```
+
+成功！更换dtb并重启后，**linux只初始化了uart2(serial1,ttymxc1)**：
+
+![image-20240105110055342](20231220_linux_console_tty.assets/image-20240105110055342.png)
+
+可以看到uart1和uart3都没有被linux识别。
+
+## 修改linux inmate的设备树并启动
+
+利用同样的思想，修改OK8MP-C-wheatfox.dts，使得linux inmate只能使用`uart1(serial0, ttymxc0)`，并在choson中设置stdout使用的串口。
+
+```c
+&uart1 { /* BT */
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1>;
+	assigned-clocks = <&clk IMX8MP_CLK_UART1>;
+	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_80M>;
+	fsl,uart-has-rtscts;
+	status = "okay";
+};
+
+&uart2 {
+	status = "disabled";
+};
+
+&uart3 {
+	status = "disabled";
+};
+```
+
+启动jailhouse
+
+```bash
+./tools/jailhouse enable ./imx8mp.cell
+./tools/jailhouse cell linux \
+	./imx8mp-linux-demo.cell \
+	./kernel/Image \
+	-i ./kernel/ramdisk.img \
+	-d ./kernel/OK8MP-C-wheatfox.dtb \
+	-c "console=ttymxc0,0x30860000,115200 earlycon=ttymxc0,0x30860000,115200"
+```
+
+![image-20240105110818244](20231220_linux_console_tty.assets/image-20240105110818244.png)
+
+可以看到还是没有输出，理论上即使这里使用和当前root linux相同的console，也是应该能够打印一些东西的，只不过会报措"unable to open initial conole"。
+
+说明linux还是启动的有问题。
+
+我注意到，厂家给的dts里是有linux inmate系列的dts的：
+
+![image-20240105111923043](20231220_linux_console_tty.assets/image-20240105111923043.png)
+
+复制一份进行修改：`arch/arm64/boot/dts/freescale/imx8mp-evk-inmate-wheatfox.dts`
+
+![image-20240105112222677](20231220_linux_console_tty.assets/image-20240105112222677.png)
+
+发现这个inmate dts使用的是uart4，先试着用这个默认的设备树启动inmate，串口暂时还是用serial1
+
+```bash
+./tools/jailhouse enable ./imx8mp.cell
+./tools/jailhouse cell linux \
+	./imx8mp-linux-demo.cell \
+	./kernel/Image \
+	-i ./kernel/ramdisk.img \
+	-d ./kernel/imx8mp-evk-inmate-wheatfox.dtb \
+	-c "clk_ignore_unused console=ttymxc1,0x30890000,115200 earlycon=ec_imx6q,0x30890000,115200"
+```
+
+![image-20240105113429976](20231220_linux_console_tty.assets/image-20240105113429976.png)
+
+理论上应该要看到Started cell "linux-inmate-demo"才说明成功启动，所以说jailhouse在create cell, cell set loadable之后，执行start cell的环节失败了。
+
+
+
+# 附录
+
+## imx8mp的4x10pin串口连接电脑
+
+打电话问forlinx技术，一种办法是焊接飞线连出来到TTL转USB的杜邦线上，另一种就是用专门的2x5 2mm间距的线，这个10pin的座叫做“牛角座”。
+
+![FD7909D83503F50DF2C479CF233E5447](20231220_linux_console_tty.assets/FD7909D83503F50DF2C479CF233E5447.png)
+
+左上角有四个UART口，采用2x5 2mm间距，为牛角座，引脚如下：
+
+```
++------+------+------+------+------+
+|  NC  |  GND |  5V  |  RXD |  NC  |
++------+------+------+------+------+
+|  NC  |  TXD |  5V  |  GND |  NC  |
++------+------+------+------+------+
+```
+
+![7B94DDB4296F3A0016B229C6F1930890](20231220_linux_console_tty.assets/7B94DDB4296F3A0016B229C6F1930890.png)
+
+对于一般的TTL转USB，需要使用三个pin，即TXD, RXD和GND，上面的10pin中需要连接3pin。
+
+需要注意的是，这里的pin间距只有2mm，而普通杜邦线间距是2.54mm，并且TTL转USB一般都是杜邦线母头，如下图：
+
+白色代表RXD（接板子TXD），绿色为TXD（接板子RXD），黑色接地。
+
+![IMG_20240105_103444_edit_409390889312531](20231220_linux_console_tty.assets/IMG_20240105_103444_edit_409390889312531.jpg)
+
+翻了一下自己没有2.54公对公的杜邦线，所有还需要买线。
+
+![IMG_20240105_103510_edit_409420967453151](20231220_linux_console_tty.assets/IMG_20240105_103510_edit_409420967453151.jpg)
+
+整个流程就是：IMG_20240105_103444_edit_409390889312531
+
+```
+牛角座10pin(2mm)【公头】 -> 【母头】2mm转2.54mm杜邦线【母头】 <- 【公头】杜邦线【公头】 -> 【公头】TTL转USB【USB】
+```
+
