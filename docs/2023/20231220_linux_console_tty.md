@@ -1125,6 +1125,37 @@ printk排查问题后，发现python脚本在load linux kernel的时候就卡住
 
 ![image-20240105154830009](20231220_linux_console_tty.assets/image-20240105154830009.png)
 
+继续打print输出，最后定位到`driver/cell.c:load_image`函数：
+
+![image-20240108152509855](20231220_linux_console_tty.assets/image-20240108152509855.png)
+
+![image-20240108152544244](20231220_linux_console_tty.assets/image-20240108152544244.png)
+
+可以看到，卡在了：
+
+```c
+if (copy_from_user(image_mem + page_offs,
+           (void __user *)(unsigned long)image.source_address,
+           image.size))
+    err = -EFAULT;
+```
+
+导致后面的printk并没有输出，可以确定的是image传递是成功的，并且也找到了放image的内存区域`0xc000_0000`，image加载的物理地址为`0xc0280000`，image大小为`0x1aea200`，为`26.91455078125MB`，这个和传入的文件大小吻合。
+
+也就是说目前整个inmate linux启动程序在`load_image`中的`copy_from_user`函数卡住了！
+
+查了一下发现，copy_from_user并不是jailhouse定义的函数，而是linux kernel提供的函数。
+
+(linux 6.7)
+
+![image-20240108155310325](20231220_linux_console_tty.assets/image-20240108155310325.png)
+
+![image-20240108155256888](20231220_linux_console_tty.assets/image-20240108155256888.png)
+
+
+
+其中to是需要加载到的目标内核空间地址，from则是用户空间中的源地址，n表示需要copy多少字节。
+
 # 附录
 
 ## imx8mp的4x10pin串口连接电脑
