@@ -1156,6 +1156,113 @@ if (copy_from_user(image_mem + page_offs,
 
 其中to是需要加载到的目标内核空间地址，from则是用户空间中的源地址，n表示需要copy多少字节。
 
+#### OK8MP硬件信息梳理
+
+`CPU: i.MX8MP[8] rev1.1 1600 MHz (running at 1200 MHz)`
+
+*i.MX 8M Plus Applications Processor Reference Manual Document Number: IMX8MPRM Rev. 1, 06/2021*
+
+执行cat /proc/iomem后，涉及RAM的部分：                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+
+```
+40000000-53ffffff : System RAM
+  40480000-41b5ffff : Kernel code
+  41b60000-41e2ffff : reserved
+  41e30000-4206bfff : Kernel data
+  43000000-43010fff : reserved
+54ff0000-54ffffff : System RAM
+55010000-550fefff : System RAM
+55100000-553fffff : System RAM
+55500000-557fffff : System RAM
+58000000-923fffff : System RAM
+  62000000-91ffffff : reserved
+94400000-bfffffff : System RAM
+  bd600000-bd9fffff : reserved
+  bdbfe000-bf9fffff : reserved
+  bfa72000-bfb72fff : reserved
+  bfb73000-bfbd2fff : reserved
+  bfbd5000-bfbdafff : reserved
+  bfbdb000-bfbdbfff : reserved
+  bfbdc000-bfffffff : reserved
+```
+
+结合imx8mp.cell：
+
+```c
+IO: 		0x00000000 - 0x40000000 size=0x40000000 1G
+RAM01: 		0x40000000 - 0xc0000000 size=0x80000000 2G
+Inmate RAM: 0xc0000000 - 0xfd700000 size=0x3d700000 983M
+Loader:		0xfdb00000 - 0xfdc00000 size=0x100000 1M
+...
+RAM04:		0x100000000 - 0x1c0000000 size=0xC0000000 3G
+```
+
+imx8mq-linux-demo.cell：
+
+```c
+UART1_ec:	0x30860000
+UART2:		0x30890000
+SHDC1:		0x30b40000
+RAM:		0xc0000000 - 0xfdc00000 size=0x3dc00000 988M
+Comm:		vaddr 0x80000000
+```
+
+这里我发现了一个问题，板子上打印出来的iomem中的物理内存区域和cell文件里的对不上，以及Image的load_addr：
+
+```c
+[wheatfox|python] trying to load kernel into cell, addr=0xc0280000
+```
+
+这个地址是保存在哪里的？如果0xc这个地址并没有在板子上被映射到RAM，那为什么编译出来的Image要加载到这里？还有一个Loader区域，这个区域是能够正常加载linux-loader.bin的，但是0xfdb这个地址也没有在iomem中显示。
+
+接下来启动jailhouse，然后再打印一下iomem：
+
+```bash
+...
+3d800000-3dbfffff : 3d800000.ddr_pmu ddr_pmu@3d800000
+# END OF IO MEM
+40000000-53ffffff : System RAM
+  40480000-41b5ffff : Kernel code
+  41b60000-41e2ffff : reserved
+  41e30000-4206bfff : Kernel data
+  43000000-43010fff : reserved
+54ff0000-54ffffff : System RAM
+55010000-550fefff : System RAM
+55100000-553fffff : System RAM
+55500000-557fffff : System RAM
+58000000-923fffff : System RAM
+  62000000-91ffffff : reserved
+94400000-bfffffff : System RAM
+  bd600000-bd9fffff : reserved
+  bdbfe000-bf9fffff : reserved
+  bfa72000-bfb72fff : reserved
+  bfb73000-bfbd2fff : reserved
+  bfbd5000-bfbdafff : reserved
+  bfbdb000-bfbdbfff : reserved
+  bfbdc000-bfffffff : reserved
+# 下面这部分是jailhouse新建的映射
+fd700000-fd7fffff : PCI ECAM
+fd800000-fd803fff : pci@0
+  fd800000-fd800fff : 0000:00:00.0
+    fd800000-fd800fff : uio_ivshmem[0000:00:00.0]
+  fd801000-fd801fff : 0000:00:01.0
+    fd801000-fd801fff : ivshmem-net
+fd900000-fd900fff : uio_ivshmem[0000:00:00.0]
+fd901000-fd909fff : uio_ivshmem[0000:00:00.0]
+fd90a000-fd90ffff : uio_ivshmem[0000:00:00.0]
+fda00000-fda00fff : ivshmem-net
+fda01000-fdafefff : ivshmem-net
+fdc00000-fdffffff : Jailhouse hypervisor
+```
+
+虽然启动jailhouse后有一些新的mem区域，但是里面也没有0xc0000000和0xfdb00000。
+
+查一下jailhouse的python脚本是如何获得image的load addr的，其核心逻辑位于`ARMCommon.setup()`中：
+
+![image-20240109114650351](20231220_linux_console_tty.assets/image-20240109114650351.png)
+
+
+
 # 附录
 
 ## imx8mp的4x10pin串口连接电脑
