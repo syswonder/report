@@ -1257,9 +1257,160 @@ fdc00000-fdffffff : Jailhouse hypervisor
 
 虽然启动jailhouse后有一些新的mem区域，但是里面也没有0xc0000000和0xfdb00000。
 
+#### 调整linux inmate内存配置
+
 查一下jailhouse的python脚本是如何获得image的load addr的，其核心逻辑位于`ARMCommon.setup()`中：
 
 ![image-20240109114650351](20231220_linux_console_tty.assets/image-20240109114650351.png)
+
+这里的逻辑是，如果找到一个内存区域，则load会自动设置为这个内存区域的开头，然后dtb等附加文件依次摆放。
+
+我修改了imx8mp-linux-demo.c的配置，将0xc开头的内存区域调整为0x6000_0000，大小暂定为256MB，因为我目前的板子是2G内存的型号，而默认的cell文件似乎是为4G内存准备的，0xc开头的部分在我的板子上并不存在。调整后成功加载并启动linux inmate：
+
+![image-20240112105209581](20231220_linux_console_tty.assets/image-20240112105209581.png)
+
+可以看到内存区域确实是限制在0x6000这里的配置好的区域了：
+
+```c
+[    0.000000] NUMA: Faking a node at [mem 0x0000000060000000-0x000000006fffffff]
+[    0.000000] NUMA: NODE_DATA [mem 0x6ff7c500-0x6ff7dfff]
+[    0.000000] Zone ranges:
+[    0.000000]   DMA32    [mem 0x0000000060000000-0x000000006fffffff]
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000060000000-0x000000006fffffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000060000000-0x000000006fffffff]
+```
+
+并且启动的CPU也确实只有两个：
+
+```c
+[    0.000000] Booting Linux on physical CPU 0x0000000002 [0x410fd034]
+...
+[    0.063542] CPU1: Booted secondary processor 0x0000000003 [0x410fd034]
+[    0.063602] smp: Brought up 1 node, 2 CPUs
+[    0.083838] SMP: Total of 2 processors activated.
+[    0.088338] CPU features: detected: 32-bit EL0 Support
+[    0.093262] CPU features: detected: CRC32 instructions
+```
+
+启动时遇到的第一个严重的问题是ramdisk“损坏”：
+
+```c
+[    0.442452] Unpacking initramfs...
+[    0.445603] Initramfs unpacking failed: invalid magic at start of compressed archive
+[    0.455219] Freeing initrd memory: 8696K
+...
+[    1.292349] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+```
+
+因为我传递的不是cpio格式的ramfs而是一个ramdisk.img，猜测可能是这里的原因，那么就需要手动编译一个loongarch64的rootfs并打包为cpio
+
+#### 编译一个rootfs
+
+下载busybox 1.36.0源码。
+
+```bash
+. /opt/fsl-imx-xwayland/5.4-zeus/environment-setup-aarch64-poky-linux
+make ARCH=arm64 CROSS_COMPILE=aarch64-poky-linux- menuconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-poky-linux- -j16
+make ARCH=arm64 CROSS_COMPILE=aarch64-poky-linux- install CONFIG_PREFIX=./build
+```
+
+![image-20240112111356531](20231220_linux_console_tty.assets/image-20240112111356531.png)
+
+https://community.nxp.com/t5/Layerscape/busybox-compile/td-p/735970
+
+实际上在厂家提供的SDK里就有编译rootfs和ramdisk的部分，可以研究一下：
+
+![image-20240112111800416](20231220_linux_console_tty.assets/image-20240112111800416.png)
+
+```bash
+#!/bin/bash
+ 
+dd if=/dev/zero of=$SDK_PATH/images/ramdisk.ext4 bs=1M count=0 seek=32
+mkfs.ext4 -F -i 4096 $SDK_PATH/images/ramdisk.ext4 -d $SDK_PATH/tools/ramdisk
+gzip --best -c $SDK_PATH/images/ramdisk.ext4 > $SDK_PATH/images/ramdisk.ext4.gz
+
+mkimage -n "ramdisk" -A arm -O linux -T ramdisk -C gzip -d $SDK_PATH/images/ramdisk.ext4.gz $SDK_PATH/images/ramdisk.img
+rm $SDK_PATH/images/ramdisk.ext4 $SDK_PATH/images/ramdisk.ext4.gz
+#pushd $SDK_PATH/tools/ramdisk/
+#find . | cpio -o -Hnewc  | gzip -9 > $SDK_PATH/tools/ramdisk.cpio.gz
+#popd
+
+#$SDK_PATH/tools/bin/mkimage -n "ramdisk" -A arm -O linux -T ramdisk -C none -d $SDK_PATH/tools/ramdisk.cpio.gz $SDK_PA#TH/images/ramdisk.img
+ 
+#rm $SDK_PATH/tools/ramdisk.cpio.gz
+```
+
+可以看到，这里的img实际上是uboot image镜像，通过把ramdisk.ext4文件mkimage制作而成，接下来需要尝试制作cpio文件。
+
+因为之前在启动rust-shyper的时候，我编译了一份arm64的busybox的rootfs，试着打包为cpio：
+
+```bash
+find ./build | cpio -o -H newc | gzip > rootfs.cpio.gz
+```
+
+更换cpio后没有unpacking报错了，但是出现了新的unhandled trap：
+
+```
+FATAL: unhandled trap (exception class 0x24)
+Cell state before exception:
+ pc: ffff800010a5dbd8   lr: ffff800010a50f38 spsr: 20000005     EL1
+ sp: ffff800011c93bd0  esr: 24 1 1830006 ESR_RAW=0000000093830006
+ x0: ffff000078818110   x1: ffff00007881ab80   x2: ffff800011f581f0
+  x3: ffff800010a5dbd8   x4: 0000000000000000   x5: ffff80006e349000
+ x6: 0000000002dbd7d7   x7: ffff00007fb80540   x8: ffff000015097a20
+ x9: ffff800011c93d50  x10: 00000000000009c0  x11: 0000000000000166
+x12: 0000000000000030  x13: 0000000000000000  x14: ffffffffffffffff
+x15: ffff0000151f4a70  x16: 0000000000000000  x17: 0000000000000000
+x18: 0000000000000010  x19: 0000000000000000  x20: 0000000000000000
+x21: ffff000078818840  x22: ffff800011f581f0  x23: 00000000000023e0
+x24: ffff0000771ee3e0  x25: 000000000000012c  x26: ffff0000771ec000
+x27: ffff00007881ab80  x28: ffff000078818840  x29: ffff800011c93bd0
+```
+
+这里的FATAL: unhandled trap (exception class 0x24)是jailhouse的输出：
+
+```c
+void arch_handle_trap(union registers *guest_regs)
+{
+	struct trap_context ctx;
+	trap_handler handler;
+	int ret = TRAP_UNHANDLED;
+
+	fill_trap_context(&ctx, guest_regs);
+
+	handler = trap_handlers[ESR_EC(ctx.esr)];
+	if (handler)
+		ret = handler(&ctx);
+
+	if (ret == TRAP_UNHANDLED || ret == TRAP_FORBIDDEN) {
+		panic_printk("\nFATAL: %s (exception class 0x%02llx)\n",
+			     (ret == TRAP_UNHANDLED ? "unhandled trap" :
+						      "forbidden access"),
+			     ESR_EC(ctx.esr));
+		panic_printk("Cell state before exception:\n");
+		dump_regs(&ctx);
+		panic_park();
+	}
+}
+```
+
+调查一下ESR的内容：`0000000093830006`
+
+https://esr.arm64.dev/#2474835974
+
+![image-20240112115754979](20231220_linux_console_tty.assets/image-20240112115754979.png)
+
+```
+EC: 0x24 0b100100
+Data Abort from a lower Exception level
+32-bit instruction trapped
+Abort caused by reading from memory
+Translation fault, level 2.
+```
 
 
 
