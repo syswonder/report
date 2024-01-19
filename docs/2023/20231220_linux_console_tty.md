@@ -1156,7 +1156,7 @@ if (copy_from_user(image_mem + page_offs,
 
 其中to是需要加载到的目标内核空间地址，from则是用户空间中的源地址，n表示需要copy多少字节。
 
-#### OK8MP硬件信息梳理
+### OK8MP硬件信息梳理
 
 `CPU: i.MX8MP[8] rev1.1 1600 MHz (running at 1200 MHz)`
 
@@ -1257,7 +1257,7 @@ fdc00000-fdffffff : Jailhouse hypervisor
 
 虽然启动jailhouse后有一些新的mem区域，但是里面也没有0xc0000000和0xfdb00000。
 
-#### 调整linux inmate内存配置
+### 调整linux inmate内存配置
 
 查一下jailhouse的python脚本是如何获得image的load addr的，其核心逻辑位于`ARMCommon.setup()`中：
 
@@ -1307,7 +1307,7 @@ fdc00000-fdffffff : Jailhouse hypervisor
 
 因为我传递的不是cpio格式的ramfs而是一个ramdisk.img，猜测可能是这里的原因，那么就需要手动编译一个loongarch64的rootfs并打包为cpio
 
-#### 编译一个rootfs
+### 编译一个rootfs
 
 下载busybox 1.36.0源码。
 
@@ -1412,7 +1412,101 @@ Abort caused by reading from memory
 Translation fault, level 2.
 ```
 
+## 调试non-root linux
 
+### jailhouse flags研究
+
+jailhouse中对内存属性的配置flag位于`include/jailhouse/cell-config.h`
+
+```c
+#define JAILHOUSE_MEM_READ		0x0001 // 内存可读
+#define JAILHOUSE_MEM_WRITE		0x0002 // 内存可写
+#define JAILHOUSE_MEM_EXECUTE		0x0004 // 内存可执行
+#define JAILHOUSE_MEM_DMA		0x0008 // 用于外设进行DMA的区域
+#define JAILHOUSE_MEM_IO		0x0010 // IO区域
+#define JAILHOUSE_MEM_COMM_REGION	0x0020 // jailhouse communication区域
+#define JAILHOUSE_MEM_LOADABLE		0x0040 // 可加载（image, loader, dtb, initramfs...）
+#define JAILHOUSE_MEM_ROOTSHARED	0x0080 // root和non-root的共享内存区域
+#define JAILHOUSE_MEM_NO_HUGEPAGES	0x0100 // 该区域的映射不使用大页
+#define JAILHOUSE_MEM_IO_UNALIGNED	0x8000 // IO，访问的地址需要在access data size上对齐，若未对齐则报错，除非mem配置了这个flag
+#define JAILHOUSE_MEM_IO_WIDTH_SHIFT	16 /* uses bits 16..19 */
+#define JAILHOUSE_MEM_IO_8		(1 << JAILHOUSE_MEM_IO_WIDTH_SHIFT) // 下面4个在jailhouse源码里并没有处理的代码
+#define JAILHOUSE_MEM_IO_16		(2 << JAILHOUSE_MEM_IO_WIDTH_SHIFT) // 其主要通过size<<JAILHOUSE_MEM_IO_WIDTH_SHIFT进行判断
+#define JAILHOUSE_MEM_IO_32		(4 << JAILHOUSE_MEM_IO_WIDTH_SHIFT) // 即配置了IO区域访问时的“data size“大小，分为4档
+#define JAILHOUSE_MEM_IO_64		(8 << JAILHOUSE_MEM_IO_WIDTH_SHIFT)
+```
+
+**jailhouse subpage**
+
+小于最小page
+
+`static enum mmio_result mmio_handle_subpage(void *arg, struct mmio_access *mmio)`
+
+对于一块jailhouse mem，可以注册其为subpage，此时会绑定一个mmio_handle_subpage函数
+
+这个函数会检查：
+
+1. 区域的flags和mmio本身的请求（读/写）进行匹配
+2. mmio访问指定的size和区域之前配置的size一致
+3. 检查mmio访问的对齐
+4. 调用paging_create，修改当前的页表添加一片临时映射
+5. mmio_perform_access，通过临时页表进行实际的MMIO访问
+
+报错的地址`0x62099abc`，调查一下这个地址是位于哪个部分：
+
+```
+linux_loader, size=0x34b0, addr=0x0
+kernel image, size=0x1ab7200, addr=0x60280000
+dtb, size=0xc75, addr=
+initd, size=0x202574, addr=0x637f0000
+```
+
+推测6200_0000这个地方有区域不能作为内存来用，移动inmate mem，避开这个区域
+
+去NXP的CPU手册里看一下这个0x60的地址属于哪个部分：
+
+![image-20240119114538611](20231220_linux_console_tty.assets/image-20240119114538611.png)
+
+可以看到从0x4000_0000往上一直到0xffff_ffff都是DDR的内存区域，所以为什么将kernel和其他东西从0x6000_0000开始放的时候0x62099abc会报错？这个地址也不是kernel代码地址，也不是dtb地址。
+
+### unable to mount rootfs错误
+
+```
+[    1.290936] Warning: unable to open an initial console.
+[    1.296010] VFS: Cannot open root device "(null)" or unknown-block(0,0): error -6
+[    1.303085] Please append a correct "root=" boot option; here are the available partitions:
+[    1.311087] Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+```
+
+从console可以看到cpio的initramfs成功进行了解压，猜测问题出现在rootfs的格式上，重新进行打包：
+
+```
+cd build
+find .| cpio -o -H newc | gzip > ../rootfs.cpio.gz
+```
+
+更新boot cmdline：
+
+```
+./tools/jailhouse cell linux \
+	./imx8mp-linux-demo-wheatfox.cell \
+	/boot/Image \
+	-i ./kernel/rootfs.cpio.gz \
+	-d ./kernel/imx8mp-evk-inmate-wheatfox.dtb \
+	-c "clk_ignore_unused console=ttymxc3,0x30a60000,115200 earlycon=ec_imx6q,0x30890000,115200 root=/dev/ram rdinit=/sbin/init rootwait rw"
+```
+
+rootwait会让linux不立即去寻找root挂载设备（如使用USB作为root），这里通过设置root=/dev/ram和rdinit将initramfs挂载上。rw则表示该root device是挂载为可读写的（我这里的root device即initramfs在内存中的一个虚拟的设备）。同时这里我也指定了non-root linux使用ttymxc3串口。
+
+### ttymxc3串口
+
+目前这个串口虽然启用了，但是向串口echo时并没有任何输出。
+
+调查发现OK8MP-C.dts里的pinctrl写错了，修改之后跑通了：
+
+![image-20240119133807506](20231220_linux_console_tty.assets/image-20240119133807506.png)
+
+但是串口驱动这个新串口的时候报错SError，原因未知。
 
 # 附录
 
@@ -1446,5 +1540,15 @@ Translation fault, level 2.
 
 ```
 牛角座10pin(2mm)【公头】 -> 【母头】2mm转2.54mm杜邦线【母头】 <- 【公头】杜邦线【公头】 -> 【公头】TTL转USB【USB】
+```
+
+UPDATE：学长说DEBUG口可以复用两个串口，需要在板子设备树里打开第四个串口，就可以使用了。
+
+```
+[    0.152731] 30860000.serial: ttymxc0 at MMIO 0x30860000 (irq = 28, base_baud = 5000000) is a IMX
+[    0.153139] 30880000.serial: ttymxc2 at MMIO 0x30880000 (irq = 29, base_baud = 5000000) is a IMX
+[    0.153475] 30890000.serial: ttymxc1 at MMIO 0x30890000 (irq = 30, base_baud = 1500000) is a IMX
+[    1.248171] printk: console [ttymxc1] enabled
+[    1.252944] 30a60000.serial: ttymxc3 at MMIO 0x30a60000 (irq = 38, base_baud = 5000000) is a IMX
 ```
 
