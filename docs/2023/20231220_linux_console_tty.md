@@ -1613,7 +1613,17 @@ rootwait会让linux不立即去寻找root挂载设备（如使用USB作为root�
 >
 > Arm体系结构具有两种异步异常类型，IRQ和FIQ，旨在支持外围中断的处理。它们用于信号外部事件，例如定时器触发，不代表系统错误。它们是预期的事件，与处理器指令流是异步的。IRQ和FIQ具有独立的路由控制，并且通常用于实现安全和非安全中断，如Arm通用中断控制器v3和v4指南中所讨论的。如何使用这两种异常类型是实现定义的。
 
+下面是传递给inmate linux的dts中涉及到UART4的部分：
 
+![Screenshot_20240221_154656](20231220_linux_console_tty.assets/Screenshot_20240221_154656.png)
+
+然后在linux inmate cell中打开UART2和UART4的irq_chip：
+
+![Screenshot_20240221_155422](20231220_linux_console_tty.assets/Screenshot_20240221_155422.png)
+
+依然还是同样的报错Kernel panic - not syncing: Asynchronous SError Interrupt。
+
+根据我在uart-inmate中的实验，推测UART4这块MMIO区域并不能读写，即使linux拿到了设备树中UART4的信息并注册了console，在真正去读写这块区域的时候就会发生内存错误。
 
 ## jailhouse inmate程序开发
 
