@@ -1508,6 +1508,153 @@ rootwait会让linux不立即去寻找root挂载设备（如使用USB作为root�
 
 但是串口驱动这个新串口的时候报错SError，原因未知。
 
+完整的报错信息：
+
+```log
+[    0.688492] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled
+[    0.693056] 30a60000.serial: ttymxc3 at MMIO 0x30a60000 (irq = 5, base_baud = 1500000) is a IMX
+[    0.700479] SError Interrupt on CPU0, code 0xbf000002 -- SError
+[    0.700481] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.4.70-2.3.0+g4f2631b022d8 #1
+[    0.700483] Hardware name: Freescale i.MX8MP EVK (DT)
+[    0.700484] pstate: 20000085 (nzCv daIf -PAN -UAO)
+[    0.700485] pc : imx_uart_readl+0x80/0xa0
+[    0.700487] lr : imx_uart_console_putchar+0x24/0x40
+[    0.700488] sp : ffff80001002b790
+[    0.700489] x29: ffff80001002b790 x28: ffff800011a66cf8 
+[    0.700493] x27: ffff800011b47328 x26: 0000000000000484 
+[    0.700496] x25: 0000000000000000 x24: 000000000000402b 
+[    0.700498] x23: 0000000000000001 x22: ffff80001069fc18 
+[    0.700501] x21: ffff0000283ab880 x20: ffff800011b478b1 
+[    0.700504] x19: ffff800011b47882 x18: 0000000000000010 
+[    0.700507] x17: 0000000000000000 x16: 0000000000000001 
+[    0.700510] x15: ffff000028040470 x14: ffffffffffffffff 
+[    0.700513] x13: ffff80009002b7f7 x12: ffff80001002b7ff 
+[    0.700516] x11: ffff800011a21000 x10: ffff800011b47328 
+[    0.700519] x9 : 0000000000000000 x8 : ffff800011b48000 
+[    0.700522] x7 : ffff80001069fd78 x6 : 0000000000000006 
+[    0.700525] x5 : 0000000000000003 x4 : 0000000000000020 
+[    0.700528] x3 : ffff0000283ab880 x2 : ffff0000283ab880 
+[    0.700531] x1 : ffff8000122100b4 x0 : 0000000000000060 
+[    0.700535] Kernel panic - not syncing: Asynchronous SError Interrupt
+[    0.700537] CPU: 0 PID: 1 Comm: swapper/0 Not tainted 5.4.70-2.3.0+g4f2631b022d8 #1
+[    0.700538] Hardware name: Freescale i.MX8MP EVK (DT)
+[    0.700539] Call trace:
+[    0.700540]  dump_backtrace+0x0/0x140
+[    0.700542]  show_stack+0x14/0x20
+[    0.700543]  dump_stack+0xb4/0x114
+[    0.700544]  panic+0x158/0x324
+[    0.700545]  nmi_panic+0x84/0x88
+[    0.700546]  arm64_serror_panic+0x74/0x80
+[    0.700547]  do_serror+0x80/0x138
+[    0.700548]  el1_error+0x84/0xf8
+[    0.700550]  imx_uart_readl+0x80/0xa0
+[    0.700551]  uart_console_write+0x58/0x78
+[    0.700552]  imx_uart_console_write+0x114/0x1f0
+[    0.700554]  console_unlock.part.0+0x234/0x3b0
+[    0.700555]  vprintk_emit+0x16c/0x298
+[    0.700556]  vprintk_default+0x38/0x40
+[    0.700557]  vprintk_func+0xe4/0x2c0
+[    0.700558]  printk+0x5c/0x7c
+[    0.700560]  register_console+0x298/0x378
+[    0.700561]  uart_add_one_port+0x4a0/0x4c8
+[    0.700562]  imx_uart_probe+0x4cc/0x718
+[    0.700563]  platform_drv_probe+0x50/0xa0
+[    0.700564]  really_probe+0xd4/0x318
+[    0.700566]  driver_probe_device+0x54/0xe8
+[    0.700567]  device_driver_attach+0x6c/0x78
+[    0.700568]  __driver_attach+0x54/0xd0
+[    0.700569]  bus_for_each_dev+0x6c/0xc0
+[    0.700571]  driver_attach+0x20/0x28
+[    0.700572]  bus_add_driver+0x140/0x1e8
+[    0.700573]  driver_register+0x60/0x110
+[    0.700574]  __platform_driver_register+0x44/0x50
+[    0.700576]  imx_uart_init+0x38/0x5c
+[    0.700577]  do_one_initcall+0x50/0x1a8
+[    0.700578]  kernel_init_freeable+0x194/0x23c
+[    0.700579]  kernel_init+0x10/0x100
+[    0.700581]  ret_from_fork+0x10/0x1c
+[    0.700594] SMP: stopping secondary CPUs
+[    0.700596] Kernel Offset: disabled
+[    0.700597] CPU features: 0x0002,2000200c
+[    0.700598] Memory Limit: none
+```
+
+可以看到是imx_uart_readl函数出现了报错，并且lr寄存器指向的是imx_uart_console_putchar。猜测可能是因为root linux已经分配了uart4（板子启动的设备树里有），然后启动non-root linux的时候重复初始化导致报错？试着在root linux里禁用uart4，只留给non root linux用。
+
+![image-20240124170609711](20231220_linux_console_tty.assets/image-20240124170609711.png)
+
+替换板子dtb后重启并启动non root linux依然会有同样的报错，所以不是这个原因：
+
+![image-20240124171207038](20231220_linux_console_tty.assets/image-20240124171207038.png)
+
+调查一下这个Kernel Panic: Asynchronous SError Interrupt
+
+手册中的描述：
+
+> **物理中断**是响应处理器外部信号而生成的中断。通常由外围设备生成。系统不会让核心不断轮询外部信号，而是通过生成中断来通知核心需要进行某些操作。
+>
+> 例如，一个系统可能使用通用异步收发器/发送器（UART）接口与外部世界进行通信。当UART接收到数据时，它需要一种机制来告诉处理器新数据已经到达并且可以被处理。UART可以使用的一种机制是生成中断来向处理器发出信号。
+>
+> 复杂的系统可能具有许多不同优先级的中断源，包括嵌套中断处理的能力，其中更高优先级的中断可以中断较低优先级的中断。处理器对这些事件的响应速度可能是系统设计中的关键问题，称为中断延迟。接下来，我们将看一下不同类型的物理中断。
+>
+> **SError**
+>
+> 系统错误（SError）是一种异常类型，旨在由内存系统响应意外事件而生成。我们不期望这些事件，但需要知道它们是否发生。这些是异步报告的，因为触发事件的指令可能已经被执行。
+>
+> SError的一个典型示例是以前称为外部异步中止的情况。SError中断的示例包括：
+>
+> 1. 内存访问已通过所有MMU检查，但在内存总线上遇到错误
+> 2. 一些RAM的奇偶校验或纠错码（ECC）检查，例如内置缓存中的RAM
+> 3. 由于将脏数据从高速缓存行写回到外部存储器而触发的中止
+>
+> SError被视为一种单独的异步异常类别，因为通常会针对这些情况有单独的处理程序。SError的生成是实现定义的。
+>
+> **IRQ和FIQ**
+>
+> Arm体系结构具有两种异步异常类型，IRQ和FIQ，旨在支持外围中断的处理。它们用于信号外部事件，例如定时器触发，不代表系统错误。它们是预期的事件，与处理器指令流是异步的。IRQ和FIQ具有独立的路由控制，并且通常用于实现安全和非安全中断，如Arm通用中断控制器v3和v4指南中所讨论的。如何使用这两种异常类型是实现定义的。
+
+
+
+## jailhouse inmate程序开发
+
+写一个测试板子上uart4串口的裸机程序（.bin），并使用jailhouse启动。
+
+在源码里的inmates目录仿照已有的结构创建一个新的`uart-wheatfox.c`文件。
+
+![image-20240124220335289](20231220_linux_console_tty.assets/image-20240124220335289.png)
+
+发现一个有趣的事情，root linux启动时给串口分配的irq和手册里写的不一样……
+```
+NXP manual page 988
+irq 24 : USDHC3
+irq 26 : UART1
+irq 27 : UART2
+irq 28 : UART3
+irq 29 : UART4
+```
+
+也就是说irq=38才是uart4实际的中断号
+
+编写了一个最小baremetal os后，向ttymxc3的MMIO地址进行读写，但是程序立马崩溃了（读写ttymxc1的MMIO反而不会有问题，可以正常打印uart）。
+
+之后我写了一个memtest，用来测试分配给这个jailhouse inmate的可读写内存区域能不能正常使用，结果出现了同样的问题。
+
+![Screenshot_20240221_113843](20231220_linux_console_tty.assets/Screenshot_20240221_113843.png)
+
+可以看到memtest并没有成功，甚至在读这块内存时就直接没有后文了。
+
+ARM64 异常定义：http://www.wowotech.net/armv8a_arch/238.html
+
+向ttymxc1对应的UART2打印完全没有问题：
+
+![Screenshot_20240221_130738](20231220_linux_console_tty.assets/Screenshot_20240221_130738.png)
+
+并且可以看到通过读写串口寄存器也确实把数据打印到了当前串口（这里通过ttyACM0连接了板子的UART2）。而当我去读写UART4的MMIO区域时，程序直接没有输出了：
+
+![Screenshot_20240221_150400](20231220_linux_console_tty.assets/Screenshot_20240221_150400.png)
+
+这里已经通过jailhouse提供的map_page接口添加了UART4对应的页表，但是仍然不行，推测是触发了exception，但目前jailhouse的inmate编程框架只适配了irq handle，对于其他的exception都没有处理，如果要加其他exception处理的话不太好加，需要手动修改汇编和链接文件等。
+
 # 附录
 
 ## imx8mp的4x10pin串口连接电脑
